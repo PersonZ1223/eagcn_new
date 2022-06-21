@@ -10,20 +10,13 @@ from recbole.utils import InputType
 
 class MyLinearLayer(torch.nn.Module):
 
-    def __init__(self, in_features, out_features, adj_matrix, bias=True):
+    def __init__(self,matrix, bias=True):
         super(MyLinearLayer, self).__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        #print('adj_matrix device:', adj_matrix.device)
-        adj_matrix = adj_matrix.cpu()
-        adj_matrix = adj_matrix.to_dense()
-        self.weight = torch.nn.Parameter(torch.Tensor(adj_matrix), requires_grad=True).cuda()
-        #print("self.weight.device:",self.weight.device)
+        self.weight = torch.nn.Parameter(matrix, requires_grad=True).cuda()
         if bias:
             self.bias = torch.nn.Parameter(torch.Tensor(64)).cuda()
         else:
             self.register_parameter('bias', None)
-
     def forward(self, input):
         y = torch.sparse.mm(self.weight, input) + self.bias
         return y
@@ -55,34 +48,13 @@ class EAGCN(GeneralRecommender):
         self.restore_item_e = None
 
         # generate intermediate data
-        self.norm_adj_matrix_lgn = self.get_norm_adj_mat_lgn()
+        self.matrix = torch.Tensor(self.n_users+self.n_items, self.n_users+self.n_items)
+        self.matrix = torch.nn.init.normal(self.matrix, mean=0, std=1)
         self.norm_adj_matrix = self.get_norm_adj_mat().to(self.device)
 
         # parameters initialization
         self.apply(xavier_uniform_initialization)
         self.other_parameter_name = ['restore_user_e', 'restore_item_e']
-    def get_norm_adj_mat_lgn(self):
-        A = sp.dok_matrix((self.n_users + self.n_items, self.n_users + self.n_items), dtype=np.float32)
-        inter_M = self.interaction_matrix
-        inter_M_t = self.interaction_matrix.transpose()
-        data_dict = dict(zip(zip(inter_M.row, inter_M.col + self.n_users), [1] * inter_M.nnz))
-        data_dict.update(dict(zip(zip(inter_M_t.row + self.n_users, inter_M_t.col), [1] * inter_M_t.nnz)))
-        A._update(data_dict)
-        # norm adj matrix
-        sumArr = (A > 0).sum(axis=1)
-        # add epsilon to avoid divide by zero Warning
-        diag = np.array(sumArr.flatten())[0] + 1e-7
-        diag = np.power(diag, -0.5)
-        D = sp.diags(diag)
-        L = D * A * D
-        # covert norm_adj matrix to tensor
-        L = sp.coo_matrix(L)
-        row = L.row
-        col = L.col
-        i = torch.LongTensor(np.array([row, col]))
-        data = torch.FloatTensor(L.data)
-        SparseL = torch.sparse.FloatTensor(i, data, torch.Size(L.shape))
-        return SparseL
 
     def get_norm_adj_mat(self):
         A = sp.dok_matrix((self.n_users + self.n_items, self.n_users + self.n_items), dtype=np.float32)
@@ -122,46 +94,28 @@ class EAGCN(GeneralRecommender):
 
     def ms_cam(self, x):
         channels = self.n_items+self.n_users
-        r = 3
-        inter_channels = int(channels // r)
-        self.norm_adj_matrix_lgn = self.norm_adj_matrix_lgn.cuda()
-        self.mylinearlayer_in = MyLinearLayer(channels, inter_channels, self.norm_adj_matrix_lgn)
-        self.mylinearlayer_out = MyLinearLayer(inter_channels, channels, self.norm_adj_matrix_lgn)
+        self.matrix = self.matrix.cuda()
+        self.mylinearlayer = MyLinearLayer(self.matrix)
         local_attn =x
         global_attn = x
-        local_attn = self.mylinearlayer_in(local_attn)
+        local_attn = self.mylinearlayer(local_attn)
+        #print('mylinearlayer_in local_attn:',local_attn)
         local_attn = F.relu(local_attn, inplace=True)
         local_attn = F.dropout(local_attn, p=0.5)
         #local_attn = F.layer_norm(local_attn, normalized_shape = 1)
-        local_attn = self.mylinearlayer_out(local_attn)
+        local_attn = self.mylinearlayer(local_attn)
+        #print('mylinearlayer_out local_attn:', local_attn)
         local_attn = local_attn.cuda()
         global_attn = F.adaptive_max_pool1d(global_attn, 1)
-        global_attn = self.mylinearlayer_in(global_attn)
+        global_attn = self.mylinearlayer(global_attn)
+        #print('mylinearlayer_in global_attn:', global_attn)
         global_attn = F.relu(global_attn, inplace=True)
         global_attn = F.dropout(global_attn, p=0.8)
         #global_attn = F.layer_norm(global_attn, normalized_shape=1)
-        global_attn = self.mylinearlayer_out(global_attn)
+        global_attn = self.mylinearlayer(global_attn)
+        #print('mylinearlayer_in global_attn:', global_attn)
         global_attn = F.dropout(global_attn, p=0.8)
         global_attn = global_attn.cuda()
-
-        self.local_att = nn.Sequential(
-            nn.Conv2d(channels, inter_channels, kernel_size=1, stride=1, padding=0),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=0.5),
-            nn.LayerNorm(normalized_shape = 1),
-            nn.Conv2d(inter_channels, channels, kernel_size=1, stride=1, padding=0),
-            #nn.Dropout(p=0.5),
-        ).cuda()
-
-        self.global_att = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(channels, inter_channels, kernel_size=1, stride=1, padding=0),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=0.8),
-            nn.LayerNorm(normalized_shape=1),
-            nn.Conv2d(inter_channels, channels, kernel_size=1, stride=1, padding=0),
-            nn.Dropout(p=0.8),
-        ).cuda()
         sigmoid = nn.Sigmoid()
         #xl = self.local_att(x)
         #xg = self.global_att(x)
@@ -197,6 +151,7 @@ class EAGCN(GeneralRecommender):
         #scores = torch.cat(score, dim=0)
         all_embeddings = all_embeddings.cuda()
         scores = self.ms_cam(all_embeddings)
+        #print('scores:',scores)
         return scores
 
     def forward(self):

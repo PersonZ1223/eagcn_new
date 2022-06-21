@@ -18,9 +18,9 @@ class MyLinearLayer(torch.nn.Module):
         adj_matrix = adj_matrix.cpu()
         adj_matrix = adj_matrix.to_dense()
         self.weight = torch.nn.Parameter(torch.Tensor(adj_matrix), requires_grad=True).cuda()
-        print("self.weight.device:",self.weight.device)
+        #print("self.weight.device:",self.weight.device)
         if bias:
-            self.bias = torch.nn.Parameter(torch.Tensor(in_features))
+            self.bias = torch.nn.Parameter(torch.Tensor(64)).cuda()
         else:
             self.register_parameter('bias', None)
 
@@ -132,14 +132,14 @@ class EAGCN(GeneralRecommender):
         local_attn = self.mylinearlayer_in(local_attn)
         local_attn = F.relu(local_attn, inplace=True)
         local_attn = F.dropout(local_attn, p=0.5)
-        local_attn = F.layer_norm(local_attn, normalized_shape = 1)
+        #local_attn = F.layer_norm(local_attn, normalized_shape = 1)
         local_attn = self.mylinearlayer_out(local_attn)
         local_attn = local_attn.cuda()
-        global_attn = F.adaptive_avg_pool1d(global_attn, 1)
+        global_attn = F.adaptive_max_pool1d(global_attn, 1)
         global_attn = self.mylinearlayer_in(global_attn)
         global_attn = F.relu(global_attn, inplace=True)
         global_attn = F.dropout(global_attn, p=0.8)
-        global_attn = F.layer_norm(global_attn, normalized_shape=1)
+        #global_attn = F.layer_norm(global_attn, normalized_shape=1)
         global_attn = self.mylinearlayer_out(global_attn)
         global_attn = F.dropout(global_attn, p=0.8)
         global_attn = global_attn.cuda()
@@ -173,12 +173,12 @@ class EAGCN(GeneralRecommender):
         wei *=2
         #print('self.num_items+self.num_users:',self.num_items+self.num_users)
         scores = torch.tensor(wei)
-        print('scores1:', scores.shape)
+        #print('scores1:', scores.shape)
         #scores = torch.nn.functional.adaptive_max_pool2d(scores,(1,1))
-        scores = torch.nn.functional.adaptive_max_pool2d(scores, 1)
-        print('scores2:',scores.shape)
+        scores = F.adaptive_max_pool1d(scores, 1)
+        #print('scores2:',scores.shape)
         scores = scores.reshape(channels, 1)
-        print('scores3:', scores.shape)
+        #print('scores3:', scores.shape)
         return scores
 
     def pre_computer(self):

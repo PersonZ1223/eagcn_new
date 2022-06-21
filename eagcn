@@ -14,14 +14,15 @@ class MyLinearLayer(torch.nn.Module):
         super(MyLinearLayer, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.weight = adj_matrix
+        self.weight = torch.nn.Parameter(adj_matrix, requires_grad=True).cuda()
         if bias:
             self.bias = torch.nn.Parameter(torch.Tensor(in_features))
         else:
             self.register_parameter('bias', None)
 
     def forward(self, input):
-        y = self.weight * input + self.bias
+        input = torch.as_tensor(input)
+        y = torch.sparse.mm(input, self.weight) + self.bias
         return y
 
 
@@ -51,11 +52,34 @@ class EAGCN(GeneralRecommender):
         self.restore_item_e = None
 
         # generate intermediate data
+        self.norm_adj_matrix_lgn = self.get_norm_adj_mat_lgn().to(self.device)
         self.norm_adj_matrix = self.get_norm_adj_mat().to(self.device)
 
         # parameters initialization
         self.apply(xavier_uniform_initialization)
         self.other_parameter_name = ['restore_user_e', 'restore_item_e']
+    def get_norm_adj_mat_lgn(self):
+        A = sp.dok_matrix((self.n_users + self.n_items, self.n_users + self.n_items), dtype=np.float32)
+        inter_M = self.interaction_matrix
+        inter_M_t = self.interaction_matrix.transpose()
+        data_dict = dict(zip(zip(inter_M.row, inter_M.col + self.n_users), [1] * inter_M.nnz))
+        data_dict.update(dict(zip(zip(inter_M_t.row + self.n_users, inter_M_t.col), [1] * inter_M_t.nnz)))
+        A._update(data_dict)
+        # norm adj matrix
+        sumArr = (A > 0).sum(axis=1)
+        # add epsilon to avoid divide by zero Warning
+        diag = np.array(sumArr.flatten())[0] + 1e-7
+        diag = np.power(diag, -0.5)
+        D = sp.diags(diag)
+        L = D * A * D
+        # covert norm_adj matrix to tensor
+        L = sp.coo_matrix(L)
+        row = L.row
+        col = L.col
+        i = torch.LongTensor(np.array([row, col]))
+        data = torch.FloatTensor(L.data)
+        SparseL = torch.sparse.FloatTensor(i, data, torch.Size(L.shape))
+        return SparseL
 
     def get_norm_adj_mat(self):
         A = sp.dok_matrix((self.n_users + self.n_items, self.n_users + self.n_items), dtype=np.float32)
@@ -97,9 +121,9 @@ class EAGCN(GeneralRecommender):
         channels = self.n_items+self.n_users
         r = 3
         inter_channels = int(channels // r)
-        self.norm_adj_matrix = self.norm_adj_matrix.cuda()
-        self.mylinearlayer_in = MyLinearLayer(channels, inter_channels, self.norm_adj_matrix)
-        self.mylinearlayer_out = MyLinearLayer(inter_channels, channels, self.norm_adj_matrix)
+        self.norm_adj_matrix_lgn = self.norm_adj_matrix_lgn.cuda()
+        self.mylinearlayer_in = MyLinearLayer(channels, inter_channels, self.norm_adj_matrix_lgn)
+        self.mylinearlayer_out = MyLinearLayer(inter_channels, channels, self.norm_adj_matrix_lgn)
         local_attn =x
         global_attn = x
         local_attn = self.mylinearlayer_in(local_attn)
@@ -146,9 +170,11 @@ class EAGCN(GeneralRecommender):
         wei *=2
         #print('self.num_items+self.num_users:',self.num_items+self.num_users)
         scores = torch.tensor(wei)
+        print('scores1:', scores.shape)
         scores = torch.nn.functional.adaptive_max_pool2d(scores,(1,1))
-        #print('scores:',scores.shape)
+        print('scores2:',scores.shape)
         scores = scores.reshape(channels, 1)
+        print('scores3:', scores.shape)
         return scores
 
     def pre_computer(self):
@@ -161,10 +187,12 @@ class EAGCN(GeneralRecommender):
         #    emb_input[i] = (emb_input[i]).cuda()
         #    channels = emb_input[i].size()[1]
         #    score.append(self.ms_cam(emb_input[i], channels))
-        emb_input = torch.reshape(all_embeddings, shape=[1, self.n_items + self.n_users, self.latent_dim, 1])
-        emb_input = emb_input.cuda()
-        scores = self.ms_cam(emb_input)
+        #emb_input = torch.reshape(all_embeddings, shape=[1, self.n_items + self.n_users, self.latent_dim, 1])
+        #emb_input = emb_input.cuda()
+        #scores = self.ms_cam(emb_input)
         #scores = torch.cat(score, dim=0)
+        all_embeddings = all_embeddings.cuda()
+        scores = self.ms_cam(all_embeddings)
         return scores
 
     def forward(self):

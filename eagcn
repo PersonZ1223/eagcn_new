@@ -14,15 +14,18 @@ class MyLinearLayer(torch.nn.Module):
         super(MyLinearLayer, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.weight = torch.nn.Parameter(adj_matrix, requires_grad=True).cuda()
+        #print('adj_matrix device:', adj_matrix.device)
+        adj_matrix = adj_matrix.cpu()
+        adj_matrix = adj_matrix.to_dense()
+        self.weight = torch.nn.Parameter(torch.Tensor(adj_matrix), requires_grad=True).cuda()
+        print("self.weight.device:",self.weight.device)
         if bias:
             self.bias = torch.nn.Parameter(torch.Tensor(in_features))
         else:
             self.register_parameter('bias', None)
 
     def forward(self, input):
-        input = torch.as_tensor(input)
-        y = torch.sparse.mm(input, self.weight) + self.bias
+        y = torch.sparse.mm(self.weight, input) + self.bias
         return y
 
 
@@ -52,7 +55,7 @@ class EAGCN(GeneralRecommender):
         self.restore_item_e = None
 
         # generate intermediate data
-        self.norm_adj_matrix_lgn = self.get_norm_adj_mat_lgn().to(self.device)
+        self.norm_adj_matrix_lgn = self.get_norm_adj_mat_lgn()
         self.norm_adj_matrix = self.get_norm_adj_mat().to(self.device)
 
         # parameters initialization
@@ -171,7 +174,8 @@ class EAGCN(GeneralRecommender):
         #print('self.num_items+self.num_users:',self.num_items+self.num_users)
         scores = torch.tensor(wei)
         print('scores1:', scores.shape)
-        scores = torch.nn.functional.adaptive_max_pool2d(scores,(1,1))
+        #scores = torch.nn.functional.adaptive_max_pool2d(scores,(1,1))
+        scores = torch.nn.functional.adaptive_max_pool2d(scores, 1)
         print('scores2:',scores.shape)
         scores = scores.reshape(channels, 1)
         print('scores3:', scores.shape)

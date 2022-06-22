@@ -14,7 +14,7 @@ class MyLinearLayer(torch.nn.Module):
         super(MyLinearLayer, self).__init__()
         matrix = matrix.cpu()
         matrix = matrix.to_dense()
-        matrix = torch.Tensor(matrix/1e9)
+        matrix = torch.Tensor(matrix/1e7)
         matrix = matrix.to_sparse()
         self.weight = torch.nn.Parameter(matrix, requires_grad=True).cuda()
         if bias:
@@ -120,29 +120,24 @@ class EAGCN(GeneralRecommender):
         channels = self.n_items+self.n_users
         self.norm_adj_matrix_lgn = self.norm_adj_matrix_lgn.cuda()
         self.mylinearlayer = MyLinearLayer(self.norm_adj_matrix_lgn)
-        #local_attn =x
+        local_attn =x
         global_attn = x
-        ln = nn.LayerNorm(self.latent_dim).cuda()
-        #local_attn = self.mylinearlayer(local_attn)
-        #print('mylinearlayer_in local_attn:',local_attn)
-        #local_attn = F.relu(local_attn, inplace=True)
-        #local_attn = F.dropout(local_attn, p=0.5)
-        #local_attn = F.layer_norm(local_attn, normalized_shape = 1)
-        #local_attn = self.mylinearlayer(local_attn)
-        #print('mylinearlayer_out local_attn:', local_attn)
-        #local_attn = local_attn.cuda()
+        #ln = nn.LayerNorm(self.latent_dim).cuda()
+        local_attn = self.mylinearlayer(local_attn)
+        local_attn = F.relu(local_attn, inplace=True)
+        local_attn = F.dropout(local_attn)
+        local_attn = self.mylinearlayer(local_attn)
+        local_attn = local_attn.cuda()
         global_attn = F.adaptive_max_pool1d(global_attn, 1)
         global_attn = self.mylinearlayer(global_attn)
         global_attn = F.relu(global_attn, inplace=True)
         global_attn = F.dropout(global_attn)
-        global_attn = ln(global_attn)
         global_attn = self.mylinearlayer(global_attn)
         global_attn = F.dropout(global_attn)
         global_attn = global_attn.cuda()
         sigmoid = nn.Sigmoid()
-        #gl = local_attn + global_attn
-        #wei = sigmoid(gl)
-        wei = sigmoid(global_attn)
+        gl = local_attn + global_attn
+        wei = sigmoid(gl)
         wei *=2
         scores = torch.tensor(wei)
         #scores = torch.nn.functional.adaptive_max_pool2d(scores,(1,1))

@@ -258,7 +258,7 @@ class SEGCNU(GeneralRecommender):
         # calculate UltraGCN Loss
         neg_items = []
         neg_candidates = np.arange(self.n_items)
-        for i in neg_item:
+        for i in pos_item:
             probs = np.ones(self.n_items)
             probs[i] = 0
             probs /= np.sum(probs)

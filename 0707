@@ -258,7 +258,7 @@ class SEGCNU(GeneralRecommender):
         neg_embeddings = item_all_embeddings[neg_items]
         omega_weight = self.get_omegas(user, pos_item, neg_items)
         mf_loss = self.cal_loss_L(u_embeddings, pos_embeddings, neg_embeddings, omega_weight)
-        neighbor_embeds = self.item_embedding(self.ii_neighbor_mat[pos_item].cuda())
+        neighbor_embeds = item_all_embeddings[self.ii_neighbor_mat[pos_item].cuda()]
         sim_scores = self.ii_constraint_mat[pos_item].cuda()
         mf_loss += self.lambda_ * self.cal_loss_I(u_embeddings, sim_scores, neighbor_embeds)
 
